@@ -3,7 +3,6 @@ import copy
 import torch
 import torch.nn as nn
 import pickle
-import mjrl.envs
 import os
 import time as timer
 from torch.autograd import Variable

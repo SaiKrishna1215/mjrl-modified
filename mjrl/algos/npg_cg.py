@@ -57,7 +57,7 @@ class NPG(BatchREINFORCE):
         self.input_normalization = input_normalization
         if self.input_normalization is not None:
             if self.input_normalization > 1 or self.input_normalization <= 0:
-                self.input_normalization = None
+                self.input_normalization = None 
 
     def HVP(self, observations, actions, vector, regu_coef=None):
         regu_coef = self.FIM_invert_args['damping'] if regu_coef is None else regu_coef

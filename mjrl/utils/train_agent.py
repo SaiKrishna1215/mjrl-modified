@@ -1,6 +1,3 @@
-import logging
-logging.disable(logging.CRITICAL)
-
 from tabulate import tabulate
 from mjrl.utils.make_train_plots import make_train_plots
 from mjrl.utils.gym_env import GymEnv
@@ -94,24 +91,32 @@ def train_agent(job_name, agent,
     if i_start:
         print("Resuming from an existing job folder ...")
 
+    env_samples = 0
     for i in range(i_start, niter):
         print("......................................................................................")
         print("ITERATION : %i " % i)
+        if agent.logger.use_wandb:
+            agent.logger.global_step += 1
 
         if train_curve[i-1] > best_perf:
-            best_policy = copy.deepcopy(agent.policy)
+            best_policy = agent.policy
             best_perf = train_curve[i-1]
 
         N = num_traj if sample_mode == 'trajectories' else num_samples
         args = dict(N=N, sample_mode=sample_mode, gamma=gamma, gae_lambda=gae_lambda, num_cpu=num_cpu)
         stats = agent.train_step(**args)
         train_curve[i] = stats[0]
+        # log total number of samples so far for convinience
+        iter_samples = agent.logger.get_current_log()['num_samples']
+        env_samples += iter_samples
+        agent.logger.log_kv('env_samples', env_samples)
 
         if evaluation_rollouts is not None and evaluation_rollouts > 0:
             print("Performing evaluation rollouts ........")
             eval_paths = sample_paths(num_traj=evaluation_rollouts, policy=agent.policy, num_cpu=num_cpu,
                                       env=e.env_id, eval_mode=True, base_seed=seed)
             mean_pol_perf = np.mean([np.sum(path['rewards']) for path in eval_paths])
+            print(path['rewards'] for path in eval_paths)
             if agent.save_logs:
                 agent.logger.log_kv('eval_score', mean_pol_perf)
                 try:

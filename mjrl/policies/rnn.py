@@ -1,9 +1,9 @@
 import numpy as np
-from mjrl.utils.fc_network import FCNetwork, FCNetworkWithBatchNorm, RNNNetwork
+from mjrl.utils.fc_network import RNNNetwork
 import torch
 from torch.autograd import Variable
 
-class MLP:
+class RNN:
     def __init__(self, env_spec,
                  hidden_sizes=(64,64),
                  min_log_std=-3,
@@ -17,13 +17,13 @@ class MLP:
             torch.manual_seed(seed)
             np.random.seed(seed)
 
-        self.model = FCNetwork(self.n, self.m, hidden_sizes)
+        self.model = RNNNetwork(self.n, self.m, hidden_sizes)
         for param in list(self.model.parameters())[-2:]:  # only last layer
            param.data = 1e-2 * param.data
         self.log_std = Variable(torch.ones(self.m) * init_log_std, requires_grad=True)
         self.trainable_params = list(self.model.parameters()) + [self.log_std]
 
-        self.old_model = FCNetwork(self.n, self.m, hidden_sizes)
+        self.old_model = RNNNetwork(self.n, self.m, hidden_sizes)
         self.old_log_std = Variable(torch.ones(self.m) * init_log_std)
         self.old_params = list(self.old_model.parameters()) + [self.old_log_std]
         for idx, param in enumerate(self.old_params):
@@ -68,7 +68,7 @@ class MLP:
     def get_action(self, observation):
         o = np.float32(observation.reshape(1, -1))
         self.obs_var.data = torch.from_numpy(o)
-        mean = self.model(self.obs_var)[0].data.numpy().ravel()
+        mean = self.model(self.obs_var).data.numpy().ravel()
         noise = np.exp(self.log_std_val) * np.random.randn(self.m)
         action = mean + noise
         return [action, {'mean': mean, 'log_std': self.log_std_val, 'evaluation': mean}]
@@ -84,8 +84,7 @@ class MLP:
             act_var = Variable(torch.from_numpy(actions).float(), requires_grad=False)
         else:
             act_var = actions
-        
-        mean = model(obs_var)[0]
+        mean = model(obs_var)
         zs = (act_var - mean) / torch.exp(log_std)
         LL = - 0.5 * torch.sum(zs ** 2, dim=1) + \
              - torch.sum(log_std) + \
@@ -121,66 +120,6 @@ class MLP:
         Dr = 2 * new_std ** 2 + 1e-8
         sample_kl = torch.sum(Nr / Dr + new_log_std - old_log_std, dim=1)
         return torch.mean(sample_kl)
-
-    # Ensure to close the writer when done
-    def close_writer(self):
-        self.model.close_writer()
-        self.old_model.close_writer()
-
-
-
-class BatchNormMLP(MLP):
-    def __init__(self, env_spec,
-                 hidden_sizes=(64,64),
-                 min_log_std=-3,
-                 init_log_std=0,
-                 seed=None,
-                 nonlinearity='relu',
-                 dropout=0,
-                 log_dir='runs/activations_with_batchnorm',
-                 *args, **kwargs):
-        self.n = env_spec.observation_dim  # number of states
-        self.m = env_spec.action_dim  # number of actions
-        self.min_log_std = min_log_std
-
-        if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-
-        self.model = FCNetworkWithBatchNorm(self.n, self.m, hidden_sizes, nonlinearity, dropout, log_dir=log_dir)
-
-        for param in list(self.model.parameters())[-2:]:  # only last layer
-           param.data = 1e-2 * param.data
-        self.log_std = Variable(torch.ones(self.m) * init_log_std, requires_grad=True)
-        self.trainable_params = list(self.model.parameters()) + [self.log_std]
-        self.model.eval()
-
-        self.old_model = FCNetworkWithBatchNorm(self.n, self.m, hidden_sizes, nonlinearity, dropout, log_dir=log_dir)
-        self.old_log_std = Variable(torch.ones(self.m) * init_log_std)
-        self.old_params = list(self.old_model.parameters()) + [self.old_log_std]
-        for idx, param in enumerate(self.old_params):
-            param.data = self.trainable_params[idx].data.clone()
-        self.old_model.eval()
-
-        self.log_std_val = np.float64(self.log_std.data.numpy().ravel())
-        self.param_shapes = [p.data.numpy().shape for p in self.trainable_params]
-        self.param_sizes = [p.data.numpy().size for p in self.trainable_params]
-        self.d = np.sum(self.param_sizes)  # total number of params
-
-        self.obs_var = Variable(torch.randn(self.n), requires_grad=False)
-
-        # Register hooks to log activations
-        self.model.register_hooks()
-        self.old_model.register_hooks()
-        self.close_writer()
-
-    def get_action(self, observation):
-        o = np.float32(observation.reshape(1, -1))
-        self.obs_var.data = torch.from_numpy(o)
-        mean = self.model(self.obs_var).data.numpy().ravel()
-        noise = np.exp(self.log_std_val) * np.random.randn(self.m)
-        action = mean + noise
-        return [action, {'mean': mean, 'log_std': self.log_std_val, 'evaluation': mean}]
 
     # Ensure to close the writer when done
     def close_writer(self):
