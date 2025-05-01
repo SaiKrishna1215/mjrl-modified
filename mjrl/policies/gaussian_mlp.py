@@ -6,6 +6,8 @@ from torch.autograd import Variable
 class RNN:
     def __init__(self, env_spec,
                  hidden_sizes=(64,64),
+                 rnn_hidden_size=64,
+                 mlp_hidden_size=64,
                  min_log_std=-3,
                  init_log_std=0,
                  seed=None):
@@ -17,13 +19,13 @@ class RNN:
             torch.manual_seed(seed)
             np.random.seed(seed)
 
-        self.model = RecurrentNetwork(self.n, self.m, hidden_sizes)
+        self.model = RecurrentNetwork(self.n, self.m, hidden_sizes, rnn_hidden_size=rnn_hidden_size, mlp_hidden_size=mlp_hidden_size)
         for param in list(self.model.parameters())[-2:]:  # only last layer
            param.data = 1e-2 * param.data
         self.log_std = Variable(torch.ones(self.m) * init_log_std, requires_grad=True)
         self.trainable_params = list(self.model.parameters()) + [self.log_std]
 
-        self.old_model = RecurrentNetwork(self.n, self.m, hidden_sizes)
+        self.old_model = RecurrentNetwork(self.n, self.m, hidden_sizes, rnn_hidden_size=rnn_hidden_size, mlp_hidden_size=mlp_hidden_size)
         self.old_log_std = Variable(torch.ones(self.m) * init_log_std)
         self.old_params = list(self.old_model.parameters()) + [self.old_log_std]
         for idx, param in enumerate(self.old_params):
