@@ -59,12 +59,47 @@ class BiLSTMPolicy:
     def mean_LL(self, observations, actions, model=None, log_std=None):
         model = self.model if model is None else model
         log_std = self.log_std if log_std is None else log_std
-        obs_var = torch.from_numpy(observations).float() if not isinstance(observations, torch.Tensor) else observations
-        act_var = torch.from_numpy(actions).float() if not isinstance(actions, torch.Tensor) else actions
-        mean = model(obs_var)[0]
+    
+        if not isinstance(observations, torch.Tensor):
+            obs_var = torch.from_numpy(observations).float()
+        else:
+            obs_var = observations
+    
+        if not isinstance(actions, torch.Tensor):
+            act_var = torch.from_numpy(actions).float()
+        else:
+            act_var = actions
+    
+        mean, _ = model(obs_var)
         zs = (act_var - mean) / torch.exp(log_std)
-        LL = - 0.5 * torch.sum(zs ** 2, dim=1) - torch.sum(log_std) - 0.5 * self.m * np.log(2 * np.pi)
+        LL = -0.5 * torch.sum(zs ** 2, dim=1) - torch.sum(log_std) - 0.5 * self.m * np.log(2 * np.pi)
         return mean, LL
+
+
+    def old_dist_info(self, observations, actions):
+    return self.mean_LL(observations, actions, self.old_model, self.old_log_std)
+
+    def new_dist_info(self, observations, actions):
+        return self.mean_LL(observations, actions, self.model, self.log_std)
+
+    def likelihood_ratio(self, new_dist_info, old_dist_info):
+        LL_old = old_dist_info[0]
+        LL_new = new_dist_info[0]
+        LR = torch.exp(LL_new - LL_old)
+        return LR
+
+    def mean_kl(self, new_dist_info, old_dist_info):
+        old_log_std = old_dist_info[2]
+        new_log_std = new_dist_info[2]
+        old_std = torch.exp(old_log_std)
+        new_std = torch.exp(new_log_std)
+        old_mean = old_dist_info[1]
+        new_mean = new_dist_info[1]
+        Nr = (old_mean - new_mean) ** 2 + old_std ** 2 - new_std ** 2
+        Dr = 2 * new_std ** 2 + 1e-8
+        sample_kl = torch.sum(Nr / Dr + new_log_std - old_log_std, dim=1)
+        return torch.mean(sample_kl)
+
 
     def close_writer(self):
         self.model.close_writer()
