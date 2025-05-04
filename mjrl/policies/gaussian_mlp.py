@@ -77,7 +77,7 @@ class BiLSTMPolicy:
 
 
     def old_dist_info(self, observations, actions):
-    return self.mean_LL(observations, actions, self.old_model, self.old_log_std)
+        return self.mean_LL(observations, actions, self.old_model, self.old_log_std)
 
     def new_dist_info(self, observations, actions):
         return self.mean_LL(observations, actions, self.model, self.log_std)
