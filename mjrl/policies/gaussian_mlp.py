@@ -1,7 +1,106 @@
 import numpy as np
 from mjrl.utils.fc_network import FCNetwork, FCNetworkWithBatchNorm, RNNNetwork, RecurrentNetwork, GRU
+from mjrl.utils.fc_network import BidirectionalLSTMNetwork
 import torch
 from torch.autograd import Variable
+
+class BiLSTMPolicy:
+    def __init__(self, env_spec,
+                 hidden_sizes=(64, 64),
+                 lstm_hidden_size=128,
+                 mlp_hidden_size=64,
+                 use_attention=True,
+                 min_log_std=-3,
+                 init_log_std=0,
+                 seed=None):
+        self.n = env_spec.observation_dim
+        self.m = env_spec.action_dim
+        self.min_log_std = min_log_std
+
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+
+        # Primary model
+        self.model = BidirectionalLSTMNetwork(self.n, self.m,
+                                              lstm_hidden_size=lstm_hidden_size,
+                                              mlp_hidden_size=mlp_hidden_size,
+                                              use_attention=use_attention)
+        for param in list(self.model.parameters())[-2:]:
+            param.data = 1e-2 * param.data
+        self.log_std = torch.nn.Parameter(torch.ones(self.m) * init_log_std)
+        self.trainable_params = list(self.model.parameters()) + [self.log_std]
+
+        # Old model
+        self.old_model = BidirectionalLSTMNetwork(self.n, self.m,
+                                                  lstm_hidden_size=lstm_hidden_size,
+                                                  mlp_hidden_size=mlp_hidden_size,
+                                                  use_attention=use_attention)
+        self.old_log_std = torch.nn.Parameter(torch.ones(self.m) * init_log_std)
+        self.old_params = list(self.old_model.parameters()) + [self.old_log_std]
+        for idx, param in enumerate(self.old_params):
+            param.data = self.trainable_params[idx].data.clone()
+
+        self.log_std_val = np.float64(self.log_std.data.numpy().ravel())
+        self.param_shapes = [p.data.numpy().shape for p in self.trainable_params]
+        self.param_sizes = [p.data.numpy().size for p in self.trainable_params]
+        self.d = np.sum(self.param_sizes)
+
+        self.obs_var = torch.nn.Parameter(torch.randn(self.n), requires_grad=False)
+
+    def get_action(self, observation):
+        o = np.float32(observation.reshape(1, -1))
+        self.obs_var.data = torch.from_numpy(o)
+        mean = self.model(self.obs_var)[0].data.numpy().ravel()
+        noise = np.exp(self.log_std_val) * np.random.randn(self.m)
+        action = mean + noise * 10
+        return [action, {'mean': mean, 'log_std': self.log_std_val, 'evaluation': mean}]
+
+    def mean_LL(self, observations, actions, model=None, log_std=None):
+        model = self.model if model is None else model
+        log_std = self.log_std if log_std is None else log_std
+        obs_var = torch.from_numpy(observations).float() if not isinstance(observations, torch.Tensor) else observations
+        act_var = torch.from_numpy(actions).float() if not isinstance(actions, torch.Tensor) else actions
+        mean = model(obs_var)[0]
+        zs = (act_var - mean) / torch.exp(log_std)
+        LL = - 0.5 * torch.sum(zs ** 2, dim=1) - torch.sum(log_std) - 0.5 * self.m * np.log(2 * np.pi)
+        return mean, LL
+
+    def log_likelihood(self, observations, actions, model=None, log_std=None):
+        mean, LL = self.mean_LL(observations, actions, model, log_std)
+        return LL.data.numpy()
+
+    def old_dist_info(self, observations, actions):
+        mean, LL = self.mean_LL(observations, actions, self.old_model, self.old_log_std)
+        return [LL, mean, self.old_log_std]
+
+    def new_dist_info(self, observations, actions):
+        mean, LL = self.mean_LL(observations, actions, self.model, self.log_std)
+        return [LL, mean, self.log_std]
+
+    def likelihood_ratio(self, new_dist_info, old_dist_info):
+        LL_old = old_dist_info[0]
+        LL_new = new_dist_info[0]
+        LR = torch.exp(LL_new - LL_old)
+        return LR
+
+    def mean_kl(self, new_dist_info, old_dist_info):
+        old_log_std = old_dist_info[2]
+        new_log_std = new_dist_info[2]
+        old_std = torch.exp(old_log_std)
+        new_std = torch.exp(new_log_std)
+        old_mean = old_dist_info[1]
+        new_mean = new_dist_info[1]
+        Nr = (old_mean - new_mean) ** 2 + old_std ** 2 - new_std ** 2
+        Dr = 2 * new_std ** 2 + 1e-8
+        sample_kl = torch.sum(Nr / Dr + new_log_std - old_log_std, dim=1)
+        return torch.mean(sample_kl)
+
+    def close_writer(self):
+        self.model.close_writer()
+        self.old_model.close_writer()
+
+
 
 class RNN:
     def __init__(self, env_spec,
