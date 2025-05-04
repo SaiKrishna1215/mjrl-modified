@@ -4,6 +4,8 @@ from mjrl.utils.fc_network import FCNetwork, FCNetworkWithBatchNorm, RNNNetwork,
 import torch
 from torch.autograd import Variable
 
+import torch.nn as nn
+
 class BiLSTMPolicy:
     def __init__(self, env_spec,
                  lstm_hidden_size=64,
