@@ -1,6 +1,6 @@
 import numpy as np
-from mjrl.utils.fc_network import FCNetwork, FCNetworkWithBatchNorm, RNNNetwork, RecurrentNetwork, GRU
-from mjrl.utils.fc_network import BidirectionalLSTMNetwork
+from mjrl.utils.fc_network import FCNetwork, FCNetworkWithBatchNorm, RNNNetwork, RecurrentNetwork, GRU, BidirectionalLSTMNetwork
+
 import torch
 from torch.autograd import Variable
 
@@ -51,7 +51,7 @@ class BiLSTMPolicy:
     def get_action(self, observation):
         o = np.float32(observation.reshape(1, -1))
         self.obs_var.data = torch.from_numpy(o)
-        mean = self.model(obs_var)[0].cpu().numpy().ravel()
+        mean = self.model(self.obs_var)[0].data.numpy().ravel()
         noise = np.exp(self.log_std_val) * np.random.randn(self.m)
         action = mean + noise * 10
         return [action, {'mean': mean, 'log_std': self.log_std_val, 'evaluation': mean}]
@@ -66,44 +66,9 @@ class BiLSTMPolicy:
         LL = - 0.5 * torch.sum(zs ** 2, dim=1) - torch.sum(log_std) - 0.5 * self.m * np.log(2 * np.pi)
         return mean, LL
 
-    def log_likelihood(self, observations, actions, model=None, log_std=None):
-        mean, LL = self.mean_LL(observations, actions, model, log_std)
-        return LL.data.numpy()
-
-    def old_dist_info(self, observations, actions):
-        mean, LL = self.mean_LL(observations, actions, self.old_model, self.old_log_std)
-        return [LL, mean, self.old_log_std]
-
-    def new_dist_info(self, observations, actions):
-        mean, LL = self.mean_LL(observations, actions, self.model, self.log_std)
-        return [LL, mean, self.log_std]
-
-    def likelihood_ratio(self, new_dist_info, old_dist_info):
-        LL_old = old_dist_info[0]
-        LL_new = new_dist_info[0]
-        LR = torch.exp(LL_new - LL_old)
-        return LR
-
-    def mean_kl(self, new_dist_info, old_dist_info):
-        old_log_std = old_dist_info[2]
-        new_log_std = new_dist_info[2]
-        old_std = torch.exp(old_log_std)
-        new_std = torch.exp(new_log_std)
-        old_mean = old_dist_info[1]
-        new_mean = new_dist_info[1]
-        
-        # Do NOT use .data or .detach()
-        numerator = (old_mean - new_mean)**2 + old_std**2 - new_std**2
-        denominator = 2 * new_std**2 + 1e-8
-        sample_kl = torch.sum(numerator / denominator + new_log_std - old_log_std, dim=1)
-        
-        return torch.mean(sample_kl)  # Return a scalar
-
-
     def close_writer(self):
         self.model.close_writer()
         self.old_model.close_writer()
-
 
 
 class RNN:
