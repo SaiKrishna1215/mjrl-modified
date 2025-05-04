@@ -6,99 +6,129 @@ from torch.autograd import Variable
 
 class BiLSTMPolicy:
     def __init__(self, env_spec,
-                 hidden_sizes=(64, 64),
-                 lstm_hidden_size=128,
+                 lstm_hidden_size=64,
                  mlp_hidden_size=64,
-                 use_attention=True,
                  min_log_std=-3,
                  init_log_std=0,
-                 seed=None):
+                 seed=None,
+                 device="cpu"):
+
         self.n = env_spec.observation_dim
         self.m = env_spec.action_dim
         self.min_log_std = min_log_std
+        self.device = device
 
         if seed is not None:
             torch.manual_seed(seed)
             np.random.seed(seed)
 
-        # Primary model
-        self.model = BidirectionalLSTMNetwork(self.n, self.m,
-                                              lstm_hidden_size=lstm_hidden_size,
-                                              mlp_hidden_size=mlp_hidden_size,
-                                              use_attention=use_attention)
-        for param in list(self.model.parameters())[-2:]:
-            param.data = 1e-2 * param.data
-        self.log_std = torch.nn.Parameter(torch.ones(self.m) * init_log_std)
-        self.trainable_params = list(self.model.parameters()) + [self.log_std]
+        self.lstm = nn.LSTM(input_size=self.n,
+                            hidden_size=lstm_hidden_size,
+                            batch_first=True,
+                            bidirectional=True)
+        self.fc = nn.Sequential(
+            nn.Linear(2 * lstm_hidden_size, mlp_hidden_size),
+            nn.Tanh(),
+            nn.Linear(mlp_hidden_size, self.m)
+        )
 
-        # Old model
-        self.old_model = BidirectionalLSTMNetwork(self.n, self.m,
-                                                  lstm_hidden_size=lstm_hidden_size,
-                                                  mlp_hidden_size=mlp_hidden_size,
-                                                  use_attention=use_attention)
-        self.old_log_std = torch.nn.Parameter(torch.ones(self.m) * init_log_std)
-        self.old_params = list(self.old_model.parameters()) + [self.old_log_std]
-        for idx, param in enumerate(self.old_params):
-            param.data = self.trainable_params[idx].data.clone()
+        self.log_std = nn.Parameter(torch.ones(self.m) * init_log_std)
+        self.trainable_params = list(self.lstm.parameters()) + list(self.fc.parameters()) + [self.log_std]
 
-        self.log_std_val = np.float64(self.log_std.data.numpy().ravel())
-        self.param_shapes = [p.data.numpy().shape for p in self.trainable_params]
-        self.param_sizes = [p.data.numpy().size for p in self.trainable_params]
+        # Clone for old model
+        self.old_lstm = nn.LSTM(self.n, lstm_hidden_size, batch_first=True, bidirectional=True)
+        self.old_fc = nn.Sequential(
+            nn.Linear(2 * lstm_hidden_size, mlp_hidden_size),
+            nn.Tanh(),
+            nn.Linear(mlp_hidden_size, self.m)
+        )
+        self.old_log_std = nn.Parameter(torch.ones(self.m) * init_log_std)
+        self.old_params = list(self.old_lstm.parameters()) + list(self.old_fc.parameters()) + [self.old_log_std]
+        self._copy_params()
+
+        self.log_std_val = np.float64(self.log_std.detach().numpy().ravel())
+        self.param_shapes = [p.shape for p in self.trainable_params]
+        self.param_sizes = [p.numel() for p in self.trainable_params]
         self.d = np.sum(self.param_sizes)
+        self.obs_var = Variable(torch.randn(self.n), requires_grad=False)
 
-        self.obs_var = torch.nn.Parameter(torch.randn(self.n), requires_grad=False)
+    def _copy_params(self):
+        for idx, param in enumerate(self.old_params):
+            param.data.copy_(self.trainable_params[idx].data.clone())
+
+    def forward_model(self, x, lstm_module, fc_module):
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        out, _ = lstm_module(x)
+        return fc_module(out[:, -1, :])
+
+    def get_param_values(self):
+        return np.concatenate([p.detach().cpu().view(-1).numpy() for p in self.trainable_params])
+
+    def set_param_values(self, new_params, set_new=True, set_old=True):
+        if set_new:
+            current_idx = 0
+            for i, param in enumerate(self.trainable_params):
+                vals = new_params[current_idx:current_idx + self.param_sizes[i]]
+                param.data = torch.tensor(vals.reshape(self.param_shapes[i]), dtype=torch.float32)
+                current_idx += self.param_sizes[i]
+            self.trainable_params[-1].data = torch.clamp(self.trainable_params[-1], self.min_log_std).data
+            self.log_std_val = np.float64(self.log_std.detach().numpy().ravel())
+        if set_old:
+            current_idx = 0
+            for i, param in enumerate(self.old_params):
+                vals = new_params[current_idx:current_idx + self.param_sizes[i]]
+                param.data = torch.tensor(vals.reshape(self.param_shapes[i]), dtype=torch.float32)
+                current_idx += self.param_sizes[i]
+            self.old_params[-1].data = torch.clamp(self.old_params[-1], self.min_log_std).data
 
     def get_action(self, observation):
         o = np.float32(observation.reshape(1, -1))
         self.obs_var.data = torch.from_numpy(o)
-        mean = self.model(self.obs_var)[0].data.numpy().ravel()
+        with torch.no_grad():
+            mean = self.forward_model(self.obs_var, self.lstm, self.fc)
+        mean = mean.squeeze(0).cpu().numpy()
         noise = np.exp(self.log_std_val) * np.random.randn(self.m)
         action = mean + noise * 10
         return [action, {'mean': mean, 'log_std': self.log_std_val, 'evaluation': mean}]
 
-    def mean_LL(self, observations, actions, model=None, log_std=None):
-        model = self.model if model is None else model
+    def mean_LL(self, observations, actions, lstm_model=None, fc_model=None, log_std=None):
+        lstm_model = self.lstm if lstm_model is None else lstm_model
+        fc_model = self.fc if fc_model is None else fc_model
         log_std = self.log_std if log_std is None else log_std
-    
-        # Convert to tensor if needed
-        if not isinstance(observations, torch.Tensor):
-            obs_var = torch.from_numpy(observations).float()
+
+        if type(observations) is not torch.Tensor:
+            obs_var = Variable(torch.from_numpy(observations).float(), requires_grad=False)
         else:
             obs_var = observations
-    
-        if not isinstance(actions, torch.Tensor):
-            act_var = torch.from_numpy(actions).float()
+        if type(actions) is not torch.Tensor:
+            act_var = Variable(torch.from_numpy(actions).float(), requires_grad=False)
         else:
             act_var = actions
-    
-        # Forward pass through model
-        mean, _ = model(obs_var)  # (batch_size, action_dim)
-    
-        # Log-likelihood of actions under a diagonal Gaussian
-        std = torch.exp(log_std)  # (action_dim,)
-        zs = (act_var - mean) / std  # broadcasting works here
-        log_probs = -0.5 * torch.sum(zs ** 2, dim=1)  \
-                    - torch.sum(log_std)              \
-                    - 0.5 * self.m * np.log(2 * np.pi)  # self.m = action_dim
-    
-        return mean, log_probs
 
+        mean = self.forward_model(obs_var, lstm_model, fc_model)
+        zs = (act_var - mean) / torch.exp(log_std)
+        LL = - 0.5 * torch.sum(zs ** 2, dim=1) + \
+             - torch.sum(log_std) + \
+             - 0.5 * self.m * np.log(2 * np.pi)
+        return mean, LL
 
+    def log_likelihood(self, observations, actions, lstm_model=None, fc_model=None, log_std=None):
+        mean, LL = self.mean_LL(observations, actions, lstm_model, fc_model, log_std)
+        return LL.detach().cpu().numpy()
 
-    def new_dist_info(self, observations, actions):
-        mean, LL = self.mean_LL(observations, actions, self.model, self.log_std)
-        return [LL, mean, self.log_std]
-    
     def old_dist_info(self, observations, actions):
-        mean, LL = self.mean_LL(observations, actions, self.old_model, self.old_log_std)
+        mean, LL = self.mean_LL(observations, actions, self.old_lstm, self.old_fc, self.old_log_std)
         return [LL, mean, self.old_log_std]
 
+    def new_dist_info(self, observations, actions):
+        mean, LL = self.mean_LL(observations, actions, self.lstm, self.fc, self.log_std)
+        return [LL, mean, self.log_std]
 
     def likelihood_ratio(self, new_dist_info, old_dist_info):
-        LL_old = old_dist_info[0]  # shape: (batch,)
-        LL_new = new_dist_info[0]  # shape: (batch,)
-        return torch.exp(LL_new - LL_old)  # shape: (batch,)
-
+        LL_old = old_dist_info[0]
+        LL_new = new_dist_info[0]
+        return torch.exp(LL_new - LL_old)
 
     def mean_kl(self, new_dist_info, old_dist_info):
         old_log_std = old_dist_info[2]
@@ -112,10 +142,6 @@ class BiLSTMPolicy:
         sample_kl = torch.sum(Nr / Dr + new_log_std - old_log_std, dim=1)
         return torch.mean(sample_kl)
 
-
-    def close_writer(self):
-        self.model.close_writer()
-        self.old_model.close_writer()
 
 
 class RNN:
