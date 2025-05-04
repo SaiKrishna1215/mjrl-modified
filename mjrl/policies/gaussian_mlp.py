@@ -51,7 +51,8 @@ class BiLSTMPolicy:
     def get_action(self, observation):
         o = np.float32(observation.reshape(1, -1))
         self.obs_var.data = torch.from_numpy(o)
-        mean = self.model(self.obs_var)[0].data.numpy().ravel()
+        with torch.no_grad():
+            mean = model(obs_var)[0].cpu().numpy().ravel()
         noise = np.exp(self.log_std_val) * np.random.randn(self.m)
         action = mean + noise * 10
         return [action, {'mean': mean, 'log_std': self.log_std_val, 'evaluation': mean}]
@@ -91,10 +92,14 @@ class BiLSTMPolicy:
         new_std = torch.exp(new_log_std)
         old_mean = old_dist_info[1]
         new_mean = new_dist_info[1]
-        Nr = (old_mean - new_mean) ** 2 + old_std ** 2 - new_std ** 2
-        Dr = 2 * new_std ** 2 + 1e-8
-        sample_kl = torch.sum(Nr / Dr + new_log_std - old_log_std, dim=1)
-        return torch.mean(sample_kl)
+        
+        # Do NOT use .data or .detach()
+        numerator = (old_mean - new_mean)**2 + old_std**2 - new_std**2
+        denominator = 2 * new_std**2 + 1e-8
+        sample_kl = torch.sum(numerator / denominator + new_log_std - old_log_std, dim=1)
+        
+        return torch.mean(sample_kl)  # Return a scalar
+
 
     def close_writer(self):
         self.model.close_writer()
