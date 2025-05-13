@@ -6,7 +6,7 @@ from torch.utils.tensorboard import SummaryWriter
 class RNNNetwork(nn.Module):
     def __init__(self, obs_dim, act_dim,
                  hidden_sizes=(256,256),
-                lstm_hidden_size=64,  # Number of hidden units in the LSTM
+                 lstm_hidden_size=64,  # Number of hidden units in the LSTM
                  mlp_hidden_size=64, 
                  nonlinearity='tanh',  # Activation after RNN
                  in_shift=None,
