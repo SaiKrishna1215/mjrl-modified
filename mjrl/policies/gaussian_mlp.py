@@ -11,102 +11,75 @@ import torch.nn as nn
 import numpy as np
 from torch.autograd import Variable
 
-class BiLSTMPolicy:
+class LSTM:
     def __init__(self, env_spec,
+                 hidden_sizes=(256, 256),
                  lstm_hidden_size=64,
                  mlp_hidden_size=64,
                  min_log_std=-3,
                  init_log_std=0,
-                 seed=None,
-                 device="cpu"):
-
+                 seed=None):
         self.n = env_spec.observation_dim
         self.m = env_spec.action_dim
         self.min_log_std = min_log_std
-        self.device = device
 
         if seed is not None:
             torch.manual_seed(seed)
             np.random.seed(seed)
 
-        # Main model
-        self.model = BidirectionalLSTMNetwork(
-            obs_dim=self.n,
-            act_dim=self.m,
-            lstm_hidden_size=lstm_hidden_size,
-            mlp_hidden_size=mlp_hidden_size
-        ).to(self.device)
+        self.model = RNNNetwork(self.n, self.m,
+                                hidden_sizes=hidden_sizes,
+                                lstm_hidden_size=lstm_hidden_size,
+                                mlp_hidden_size=mlp_hidden_size)
 
-        # Log std as trainable parameter
-        self.log_std = nn.Parameter(torch.ones(self.m) * init_log_std)
+        for param in list(self.model.parameters())[-2:]:  # initialize output layer
+            param.data = 1e-2 * param.data
 
-        # Parameter lists
+        self.log_std = Variable(torch.ones(self.m) * init_log_std, requires_grad=True)
         self.trainable_params = list(self.model.parameters()) + [self.log_std]
 
-        # Clone old model
-        self.old_model = BidirectionalLSTMNetwork(
-            obs_dim=self.n,
-            act_dim=self.m,
-            lstm_hidden_size=lstm_hidden_size,
-            mlp_hidden_size=mlp_hidden_size
-        ).to(self.device)
-        self.old_log_std = nn.Parameter(torch.ones(self.m) * init_log_std)
+        # Clone for old model
+        self.old_model = RNNNetwork(self.n, self.m,
+                                    hidden_sizes=hidden_sizes,
+                                    lstm_hidden_size=lstm_hidden_size,
+                                    mlp_hidden_size=mlp_hidden_size)
+        self.old_log_std = Variable(torch.ones(self.m) * init_log_std)
         self.old_params = list(self.old_model.parameters()) + [self.old_log_std]
-        self._copy_params()
 
-        # Setup for saving/restoring parameters
-        self.log_std_val = np.float64(self.log_std.detach().numpy().ravel())
-        self.param_shapes = [p.shape for p in self.trainable_params]
-        self.param_sizes = [p.numel() for p in self.trainable_params]
-        self.d = np.sum(self.param_sizes)
-        self.obs_var = Variable(torch.randn(self.n), requires_grad=False)
-
-    def show_activations(self):
-        return self.model.activations
-
-
-    def _copy_params(self):
         for idx, param in enumerate(self.old_params):
-            param.data.copy_(self.trainable_params[idx].data.clone())
+            param.data = self.trainable_params[idx].data.clone()
 
-    def forward_model(self, x, model):
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        out, _ = model(x)
-        return out
+        self.log_std_val = np.float64(self.log_std.data.numpy().ravel())
+        self.param_shapes = [p.data.numpy().shape for p in self.trainable_params]
+        self.param_sizes = [p.data.numpy().size for p in self.trainable_params]
+        self.d = np.sum(self.param_sizes)
+
+        self.obs_var = Variable(torch.randn(self.n), requires_grad=False)
 
     def get_action(self, observation):
         o = np.float32(observation.reshape(1, -1))
-        self.obs_var.data = torch.from_numpy(o).to(self.device)
-        with torch.no_grad():
-            mean = self.forward_model(self.obs_var, self.model)
-        mean = mean.squeeze(0).cpu().numpy()
+        self.obs_var.data = torch.from_numpy(o)
+        mean, _ = self.model(self.obs_var)
+        mean = mean.data.numpy().ravel()
         noise = np.exp(self.log_std_val) * np.random.randn(self.m)
-        action = mean + noise * 10
+        action = mean + noise
         return [action, {'mean': mean, 'log_std': self.log_std_val, 'evaluation': mean}]
 
     def mean_LL(self, observations, actions, model=None, log_std=None):
         model = self.model if model is None else model
         log_std = self.log_std if log_std is None else log_std
 
-        if type(observations) is not torch.Tensor:
-            obs_var = Variable(torch.from_numpy(observations).float(), requires_grad=False).to(self.device)
-        else:
-            obs_var = observations.to(self.device)
+        obs_var = observations if isinstance(observations, torch.Tensor) else Variable(torch.from_numpy(observations).float())
+        act_var = actions if isinstance(actions, torch.Tensor) else Variable(torch.from_numpy(actions).float())
 
-        if type(actions) is not torch.Tensor:
-            act_var = Variable(torch.from_numpy(actions).float(), requires_grad=False).to(self.device)
-        else:
-            act_var = actions.to(self.device)
-
-        mean = self.forward_model(obs_var, model)
+        mean, _ = model(obs_var)
         zs = (act_var - mean) / torch.exp(log_std)
-        LL = -0.5 * torch.sum(zs ** 2, dim=1) - torch.sum(log_std) - 0.5 * self.m * np.log(2 * np.pi)
+        LL = - 0.5 * torch.sum(zs ** 2, dim=1) - torch.sum(log_std) - 0.5 * self.m * np.log(2 * np.pi)
         return mean, LL
 
     def log_likelihood(self, observations, actions, model=None, log_std=None):
-        mean, LL = self.mean_LL(observations, actions, model, log_std)
-        return LL.detach().cpu().numpy()
+        _, LL = self.mean_LL(observations, actions, model, log_std)
+        return LL.data.numpy()
 
     def old_dist_info(self, observations, actions):
         mean, LL = self.mean_LL(observations, actions, self.old_model, self.old_log_std)
@@ -117,42 +90,46 @@ class BiLSTMPolicy:
         return [LL, mean, self.log_std]
 
     def likelihood_ratio(self, new_dist_info, old_dist_info):
-        LL_old = old_dist_info[0]
         LL_new = new_dist_info[0]
+        LL_old = old_dist_info[0]
         return torch.exp(LL_new - LL_old)
 
     def mean_kl(self, new_dist_info, old_dist_info):
-        old_log_std = old_dist_info[2]
-        new_log_std = new_dist_info[2]
-        old_std = torch.exp(old_log_std)
-        new_std = torch.exp(new_log_std)
-        old_mean = old_dist_info[1]
-        new_mean = new_dist_info[1]
+        old_mean, old_log_std = old_dist_info[1], old_dist_info[2]
+        new_mean, new_log_std = new_dist_info[1], new_dist_info[2]
+        old_std, new_std = torch.exp(old_log_std), torch.exp(new_log_std)
         Nr = (old_mean - new_mean) ** 2 + old_std ** 2 - new_std ** 2
         Dr = 2 * new_std ** 2 + 1e-8
         sample_kl = torch.sum(Nr / Dr + new_log_std - old_log_std, dim=1)
         return torch.mean(sample_kl)
 
-    def get_param_values(self):
-        return np.concatenate([p.detach().cpu().view(-1).numpy() for p in self.trainable_params])
-
     def set_param_values(self, new_params, set_new=True, set_old=True):
         if set_new:
             current_idx = 0
-            for i, param in enumerate(self.trainable_params):
-                vals = new_params[current_idx:current_idx + self.param_sizes[i]]
-                param.data = torch.tensor(vals.reshape(self.param_shapes[i]), dtype=torch.float32).to(self.device)
-                current_idx += self.param_sizes[i]
+            for idx, param in enumerate(self.trainable_params):
+                vals = new_params[current_idx:current_idx + self.param_sizes[idx]].reshape(self.param_shapes[idx])
+                param.data = torch.from_numpy(vals).float()
+                current_idx += self.param_sizes[idx]
             self.trainable_params[-1].data = torch.clamp(self.trainable_params[-1], self.min_log_std).data
-            self.log_std_val = np.float64(self.log_std.detach().cpu().numpy().ravel())
+            self.log_std_val = np.float64(self.log_std.data.numpy().ravel())
 
         if set_old:
             current_idx = 0
-            for i, param in enumerate(self.old_params):
-                vals = new_params[current_idx:current_idx + self.param_sizes[i]]
-                param.data = torch.tensor(vals.reshape(self.param_shapes[i]), dtype=torch.float32).to(self.device)
-                current_idx += self.param_sizes[i]
+            for idx, param in enumerate(self.old_params):
+                vals = new_params[current_idx:current_idx + self.param_sizes[idx]].reshape(self.param_shapes[idx])
+                param.data = torch.from_numpy(vals).float()
+                current_idx += self.param_sizes[idx]
             self.old_params[-1].data = torch.clamp(self.old_params[-1], self.min_log_std).data
+
+    def get_param_values(self):
+        return np.concatenate([p.contiguous().view(-1).data.numpy() for p in self.trainable_params])
+
+    def show_activations(self):
+        return self.model.activations
+
+    def close_writer(self):
+        self.model.close_writer()
+        self.old_model.close_writer()
 
 
 
