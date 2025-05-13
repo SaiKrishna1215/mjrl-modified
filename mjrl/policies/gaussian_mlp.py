@@ -1,5 +1,5 @@
 import numpy as np
-from mjrl.utils.fc_network import FCNetwork, FCNetworkWithBatchNorm, RNNNetwork, RecurrentNetwork, GRU, BidirectionalLSTMNetwork
+from mjrl.utils.fc_network import FCNetwork, FCNetworkWithBatchNorm, RNNNetwork, RecurrentNetwork, GRU
 
 import torch
 from torch.autograd import Variable
