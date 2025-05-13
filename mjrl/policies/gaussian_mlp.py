@@ -54,6 +54,9 @@ class BiLSTMPolicy:
         self.d = np.sum(self.param_sizes)
         self.obs_var = Variable(torch.randn(self.n), requires_grad=False)
 
+    def show_activations(self):
+        return self.model.activations
+
     def _copy_params(self):
         for idx, param in enumerate(self.old_params):
             param.data.copy_(self.trainable_params[idx].data.clone())
