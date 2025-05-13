@@ -43,9 +43,9 @@ class RNNNetwork(nn.Module):
         self.writer = SummaryWriter(log_dir)
         
         
-def initialize_hidden_state(self, batch_size, device):
-    return (torch.zeros(1, batch_size, self.lstm_hidden_size).to(device),
-            torch.zeros(1, batch_size, self.lstm_hidden_size).to(device))
+    def initialize_hidden_state(self, batch_size, device):
+        return (torch.zeros(1, batch_size, self.lstm_hidden_size).to(device),
+                torch.zeros(1, batch_size, self.lstm_hidden_size).to(device))
 
     def set_transformations(self, in_shift=None, in_scale=None, out_shift=None, out_scale=None):
         self.transformations = dict(in_shift=in_shift,
