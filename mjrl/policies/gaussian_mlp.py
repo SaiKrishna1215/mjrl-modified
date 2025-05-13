@@ -55,7 +55,7 @@ class BiLSTMPolicy:
         self.obs_var = Variable(torch.randn(self.n), requires_grad=False)
 
     def show_activations(self):
-        return self.model.activations
+        return self.lstm.activations
 
     def _copy_params(self):
         for idx, param in enumerate(self.old_params):
