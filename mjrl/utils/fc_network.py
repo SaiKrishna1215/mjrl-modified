@@ -25,6 +25,8 @@ class RNNNetwork(nn.Module):
         self.set_transformations(in_shift, in_scale, out_shift, out_scale)
         self.lstm = nn.LSTM(input_size=obs_dim, hidden_size=lstm_hidden_size, batch_first=True)
 
+        self.lstm_hidden_size = lstm_hidden_size
+
         self.fc = nn.Linear(lstm_hidden_size, mlp_hidden_size)
         self.output_layer = nn.Linear(mlp_hidden_size, act_dim)
         
